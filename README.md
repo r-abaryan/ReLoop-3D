@@ -1,65 +1,72 @@
-## 3D Active Learning (Toy Demo)
+## ReLoop-3D
 
-Minimal PyTorch pipeline to classify rendered 3D shapes and improve via an active-learning loop.
+A minimal pipeline to classify rendered views of simple 3D meshes. Includes a Gradio app for uploading a mesh, rendering multiple views, and running a trained classifier.
+
+### Requirements
+- Windows 10/11 or macOS/Linux
+- Python 3.10+
+- GPU optional (PyTorch supports CPU)
 
 ### Install
 ```bash
 python -m venv .venv
-. .venv/Scripts/Activate.ps1  # Windows PowerShell
+# Windows PowerShell
+. .venv/Scripts/Activate.ps1
+# macOS/Linux
+# source .venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
-### Data
-- Labeled: either `data/labels.csv` (columns: `image_path,label`) or folders `data/images/<class>/*.png`
-- Unlabeled pool: `data/unlabeled/*.png`
-
-### Train
-```bash
-python -m src.train --data_dir data --out_dir outputs --epochs 5 --model cnn
-# or a small transformer (ViT-tiny, image_size defaults to 224)
-python -m src.train --data_dir data --out_dir outputs --epochs 5 --model vit_tiny
-```
-
-### Active Learning (select uncertain unlabeled)
-```bash
-python -m src.active_learning --data_dir data --out_dir outputs --num_query 50
-```
-Outputs `annotations/annotation_queue.csv`. Fill the `label` column.
-
-### Retrain with Corrections
-```bash
-python -m src.retrain_with_corrections --data_dir data --out_dir outputs --corrections annotations/corrections.csv --epochs 3
-```
-Merges labels, moves images into `data/images/<label>/`, and continues training from the latest checkpoint.
-
-### Evaluate & Visualize
-```bash
-python -m src.eval --data_dir data --out_dir outputs
-```
-Saves `outputs/confusion_matrix.png` and `outputs/eval_metrics.csv`.
-
-### Single-Image Test
-```bash
-python -m src.predict --image path/to/image.png --out_dir outputs
-```
-Prints top predictions and saves `outputs/prediction_annotated.png`.
-
-### Playground (UI)
+### Run the app
 ```bash
 python -m src.app
 ```
-Opens a Gradio UI with two tabs:
-- Image: upload a single image and see predictions.
-- 3D Model: upload a simple mesh (.obj/.ply/.stl). The app renders multiple offscreen views via Open3D and aggregates predictions across views.
-  - If Open3D headless isn’t available on Windows, it falls back to pyrender+trimesh. You can also provide a Blender path for GPU-quality renders.
- - Web Preview (Plotly): interactive, browser-based mesh viewer (no OpenGL needed). Useful when headless rendering isn’t available; not used for training snapshots.
+What you get:
+- Image tab: test the trained model on a single image.
+- 3D Model tab: upload `.obj/.ply/.stl/.glb/.gltf`, see a live web preview, render N views offscreen, and get predictions aggregated over views.
 
-Notes: images are resized to 128 (CNN) or 224 (ViT-tiny). Tune via flags.
+Notes for 3D tab:
+- Preview: the selected mesh is converted to a temporary `.glb` for robust browser viewing.
+- Rendering: the same geometry is normalized and rendered offscreen. Backends are tried in order: Blender (if provided) → Open3D → pyrender → matplotlib.
+- You can pass a Blender path (optional) for best visual fidelity on complex assets.
 
-### 3D Notes
-- Requires `open3d` (added in `requirements.txt`).
-- Supported mesh formats tested: `.obj`, `.ply`, `.stl`.
-- The 3D tab renders a few azimuths around the model; predictions are averaged across views.
- - Windows headless rendering: If you see EGL errors, the app automatically tries pyrender. For best results with NVIDIA GPUs, set the Blender path in the UI or export `BLENDER_PATH` environment variable to a `blender.exe` and the app will render via Blender in headless mode.
+### Train a model (toy example)
+This repo includes simple classifiers (CNN or ViT-tiny) trained on renderings. Adjust to your data as needed.
+```bash
+# CNN (image size 128)
+python -m src.train --data_dir data --out_dir outputs --epochs 5 --model cnn
 
+# ViT-tiny (image size 224)
+python -m src.train --data_dir data --out_dir outputs --epochs 5 --model vit_tiny
+```
+The app loads `outputs/model_latest.pt` by default. To change the directory, edit the textbox at the top of the UI.
 
+### Active Learning (Phase 2)
+Phase 2 will add an optional feedback loop: select uncertain samples → label/correct → retrain from the latest checkpoint. For now, the app focuses on preview, rendering, and prediction; training scripts are provided to support later loop integration.
+
+### Troubleshooting
+- No 3D preview: ensure file is one of the supported formats. For `.gltf` with external textures, keep textures next to the file. The app converts to `.glb` for preview automatically.
+- Renders are blank: try a simpler mesh first; then provide a Blender path for higher-quality fallback. The app also falls back to `pyrender` and `matplotlib` if Open3D offscreen is unavailable.
+- Performance: reduce “Num Views”, or train the CNN model (128×128) instead of ViT (224×224).
+
+### Useful scripts
+- `src/view_o3d.py`: quick local viewer for one or more meshes using Open3D.
+- `src/train.py`: trains a small classifier and writes `outputs/model_latest.pt`.
+- `src/app.py`: Gradio UI entrypoint.
+
+### References
+- Open3D: https://github.com/isl-org/Open3D
+
+## Citation
+
+If you use this work, please cite:
+
+```bibtex
+@software{ReLoop3D,
+  title={ReLoop3D: 3D Active Learning with Feedback for Machine Learning},
+  author={Abaryan},
+  year={2025},
+  url={https://github.com/r-abaryan/CyberLLM-Agent}
+}
+```
