@@ -48,8 +48,15 @@ Prints top predictions and saves `outputs/prediction_annotated.png`.
 ```bash
 python -m src.app
 ```
-Opens a Gradio UI in your browser to upload images and see predictions.
+Opens a Gradio UI with two tabs:
+- Image: upload a single image and see predictions.
+- 3D Model: upload a simple mesh (.obj/.ply/.stl). The app renders multiple offscreen views via Open3D and aggregates predictions across views.
 
 Notes: images are resized to 128 (CNN) or 224 (ViT-tiny). Tune via flags.
+
+### 3D Notes
+- Requires `open3d` (added in `requirements.txt`).
+- Supported mesh formats tested: `.obj`, `.ply`, `.stl`.
+- The 3D tab renders a few azimuths around the model; predictions are averaged across views.
 
 

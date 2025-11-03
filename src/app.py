@@ -9,6 +9,7 @@ import gradio as gr
 
 from .models.simple_cnn import SimpleShapeCNN
 from .models.transformer import create_vit_tiny_classifier
+from .three_d import render_views
 
 
 _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -62,19 +63,63 @@ def predict_image(img: Image.Image, out_dir: str) -> Tuple[str, list]:
 	return best, rows
 
 
+def _aggregate_probs(probs_list: List[torch.Tensor]) -> torch.Tensor:
+	# Mean of probabilities across views
+	stack = torch.stack(probs_list, dim=0)
+	return stack.mean(dim=0)
+
+
+def predict_model_3d(file_obj, out_dir: str, num_views: int = 4):
+	if file_obj is None:
+		return "No model", [], None
+	if _model is None:
+		_load_latest_checkpoint(out_dir)
+	# Render views
+	try:
+		views = render_views(file_obj.name, image_size=_image_size, num_views=num_views)
+	except Exception as exc:
+		return f"Render error: {exc}", [], None
+	# Predict per view
+	transform = _build_tf()
+	probs_list: List[torch.Tensor] = []
+	thumbs: List[Image.Image] = []
+	with torch.no_grad():
+		for img in views:
+			thumbs.append(img)
+			ten = transform(img.convert("RGB")).unsqueeze(0).to(_device)
+			logits = _model(ten)
+			probs = F.softmax(logits, dim=1)[0]
+			probs_list.append(probs)
+	if not probs_list:
+		return "No views rendered", [], None
+	avg = _aggregate_probs(probs_list)
+	top_prob, top_idx = torch.topk(avg, k=min(5, len(_classes)))
+	labels = [_classes[i] for i in top_idx.cpu().numpy().tolist()]
+	scores = [float(x) for x in top_prob.cpu().numpy().tolist()]
+	best = f"{labels[0]} ({scores[0]:.3f})" if labels else "N/A"
+	rows = [[l, f"{s:.3f}"] for l, s in zip(labels, scores)]
+	return best, rows, thumbs
+
+
 def build_interface():
 	with gr.Blocks(title="3D Active Learning Playground") as demo:
-		gr.Markdown("## 3D Active Learning Playground\nUpload a rendered image to see predictions from the latest checkpoint.")
-		with gr.Row():
-			img = gr.Image(type="pil", label="Input Image")
-			out_dir = gr.Textbox(value="outputs", label="Checkpoint Directory")
-		with gr.Row():
-			btn = gr.Button("Predict")
-		with gr.Row():
-			pred = gr.Textbox(label="Top Prediction")
-			table = gr.Dataframe(headers=["label", "probability"], label="Top-K", interactive=False)
-
-		btn.click(fn=predict_image, inputs=[img, out_dir], outputs=[pred, table])
+		gr.Markdown("## 3D Active Learning Playground\nUpload an image or a simple 3D mesh; we'll render multiple views and classify.")
+		out_dir = gr.Textbox(value="outputs", label="Checkpoint Directory")
+		with gr.Tabs():
+			with gr.TabItem("Image"):
+				img = gr.Image(type="pil", label="Input Image")
+				btn_img = gr.Button("Predict Image")
+				pred_i = gr.Textbox(label="Top Prediction")
+				table_i = gr.Dataframe(headers=["label", "probability"], label="Top-K", interactive=False)
+				btn_img.click(fn=predict_image, inputs=[img, out_dir], outputs=[pred_i, table_i])
+			with gr.TabItem("3D Model"):
+				model_file = gr.File(label="Mesh (.obj/.ply/.stl)")
+				num_views = gr.Slider(1, 12, value=4, step=1, label="Num Views")
+				btn_3d = gr.Button("Render + Predict")
+				pred_3d = gr.Textbox(label="Top Prediction")
+				table_3d = gr.Dataframe(headers=["label", "probability"], label="Top-K", interactive=False)
+				gallery = gr.Gallery(label="Rendered Views", columns=4, height=200)
+				btn_3d.click(fn=predict_model_3d, inputs=[model_file, out_dir, num_views], outputs=[pred_3d, table_3d, gallery])
 	return demo
 
 
