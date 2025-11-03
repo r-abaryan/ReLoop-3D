@@ -127,6 +127,28 @@ def _convert_to_glb_for_preview(model_path: str) -> str:
 		return _prepare_preview_path(model_path)
 
 
+def _clear_caches():
+	"""Remove preview/render caches to free space and force regeneration."""
+	import shutil
+	removed = []
+	for d in [".preview_cache", ".render_cache"]:
+		if os.path.isdir(d):
+			try:
+				shutil.rmtree(d)
+				removed.append(d)
+			except Exception:
+				pass
+	msg = "Cleared: " + (", ".join(removed) if removed else "(nothing to clear)")
+	return gr.update(value=msg)
+
+
+def _gallery_update(images: List[Image.Image], num_views: int) -> gr.update:
+	# Fit exactly one row: height ~= image_size + padding; cap min height
+	height = max(200, _image_size + 40)
+	cols = max(1, min(int(num_views), 6))
+	return gr.update(value=images, height=height, columns=cols)
+
+
 def predict_model_3d(model_path: str, out_dir: str, num_views: int = 4, blender_path: str = ""):
 	if not model_path:
 		return "No model", [], None, gr.update(value=None)
@@ -136,7 +158,7 @@ def predict_model_3d(model_path: str, out_dir: str, num_views: int = 4, blender_
 	try:
 		views = render_views(model_path, image_size=_image_size, num_views=num_views, blender_path=(blender_path or None))
 	except Exception as exc:
-		return f"Render error: {exc}", [], None, gr.update(value=_convert_to_glb_for_preview(model_path))
+		return f"Render error: {exc}", [], _gallery_update([], num_views), gr.update(value=_convert_to_glb_for_preview(model_path))
 	# Predict per view
 	transform = _build_tf()
 	probs_list: List[torch.Tensor] = []
@@ -149,14 +171,14 @@ def predict_model_3d(model_path: str, out_dir: str, num_views: int = 4, blender_
 			probs = F.softmax(logits, dim=1)[0]
 			probs_list.append(probs)
 	if not probs_list:
-		return "No views rendered", [], None, gr.update(value=_convert_to_glb_for_preview(model_path))
+		return "No views rendered", [], _gallery_update([], num_views), gr.update(value=_convert_to_glb_for_preview(model_path))
 	avg = _aggregate_probs(probs_list)
 	top_prob, top_idx = torch.topk(avg, k=min(5, len(_classes)))
 	labels = [_classes[i] for i in top_idx.cpu().numpy().tolist()]
 	scores = [float(x) for x in top_prob.cpu().numpy().tolist()]
 	best = f"{labels[0]} ({scores[0]:.3f})" if labels else "N/A"
 	rows = [[l, f"{s:.3f}"] for l, s in zip(labels, scores)]
-	return best, rows, thumbs, gr.update(value=_convert_to_glb_for_preview(model_path))
+	return best, rows, _gallery_update(thumbs, num_views), gr.update(value=_convert_to_glb_for_preview(model_path))
 
 
 def _model_file_path(model_path: str):
@@ -175,18 +197,25 @@ def build_interface():
 				table_i = gr.Dataframe(headers=["label", "probability"], label="Top-K", interactive=False)
 				btn_img.click(fn=predict_image, inputs=[img, out_dir], outputs=[pred_i, table_i])
 			with gr.TabItem("3D Model"):
-				model_file = gr.File(label="Mesh (.obj/.ply/.stl/.glb/.gltf)", file_types=[".obj", ".ply", ".stl", ".glb", ".gltf"], type="filepath")
-				model_view = gr.Model3D(label="3D Preview", height=420)
-				blender = gr.Textbox(value="", label="Blender Path (optional)")
-				num_views = gr.Slider(1, 12, value=4, step=1, label="Num Views")
-				btn_3d = gr.Button("Render + Predict")
+				with gr.Row():
+					with gr.Column(scale=1):
+						model_file = gr.File(label="Mesh (.obj/.ply/.stl/.glb/.gltf)", file_types=[".obj", ".ply", ".stl", ".glb", ".gltf"], type="filepath")
+						with gr.Accordion("Advanced", open=False):
+							blender = gr.Textbox(value="", label="Blender Path (optional)")
+							num_views = gr.Slider(1, 12, value=4, step=1, label="Num Views")
+						btn_3d = gr.Button("Render + Predict")
+						cache_status = gr.Markdown(visible=True)
+						btn_clear = gr.Button("Clear Cache")
+					with gr.Column(scale=1):
+						model_view = gr.Model3D(label="3D Preview", height=420)
+				# Outputs under controls
 				pred_3d = gr.Textbox(label="Top Prediction")
 				table_3d = gr.Dataframe(headers=["label", "probability"], label="Top-K", interactive=False)
-				gallery = gr.Gallery(label="Rendered Views", columns=4, height=200)
-				# Update viewer immediately when a file is selected
+				gallery = gr.Gallery(label="Rendered Views", columns=4, height=256)
+				# Wiring
 				model_file.change(fn=_model_file_path, inputs=[model_file], outputs=[model_view])
-				# Render + predict also updates the viewer (in case user loaded via URL/temp file)
 				btn_3d.click(fn=predict_model_3d, inputs=[model_file, out_dir, num_views, blender], outputs=[pred_3d, table_3d, gallery, model_view])
+				btn_clear.click(fn=_clear_caches, inputs=[], outputs=[cache_status])
 	return demo
 
 
