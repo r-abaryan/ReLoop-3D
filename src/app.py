@@ -1,4 +1,6 @@
 import os
+import sys
+import textwrap
 from typing import List, Tuple
 
 import torch
@@ -7,10 +9,15 @@ from PIL import Image
 from torchvision import transforms
 import gradio as gr
 
-from .models.simple_cnn import SimpleShapeCNN
-from .models.transformer import create_vit_tiny_classifier
-from .three_d import render_views
-
+# Allow running as a module (python -m src.app) or as a script (python src/app.py)
+try:
+	from .models.simple_cnn import SimpleShapeCNN  # type: ignore
+	from .models.transformer import create_vit_tiny_classifier  # type: ignore
+	from .three_d import render_views  # type: ignore
+except Exception:
+	from models.simple_cnn import SimpleShapeCNN
+	from models.transformer import create_vit_tiny_classifier
+	from three_d import render_views
 
 _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _model = None
@@ -55,7 +62,7 @@ def predict_image(img: Image.Image, out_dir: str) -> Tuple[str, list]:
 	with torch.no_grad():
 		logits = _model(ten)
 		probs = F.softmax(logits, dim=1)[0]
-		top_prob, top_idx = torch.topk(probs, k=min(5, len(_classes)))
+	top_prob, top_idx = torch.topk(probs, k=min(5, len(_classes)))
 	labels = [_classes[i] for i in top_idx.cpu().numpy().tolist()]
 	scores = [float(x) for x in top_prob.cpu().numpy().tolist()]
 	best = f"{labels[0]} ({scores[0]:.3f})" if labels else "N/A"
@@ -69,16 +76,67 @@ def _aggregate_probs(probs_list: List[torch.Tensor]) -> torch.Tensor:
 	return stack.mean(dim=0)
 
 
-def predict_model_3d(file_obj, out_dir: str, num_views: int = 4):
-	if file_obj is None:
-		return "No model", [], None
+def _prepare_preview_path(model_path: str) -> str:
+	"""Copy model to a local cache path with a safe filename for Model3D preview."""
+	try:
+		import shutil
+		from pathlib import Path
+		if not model_path:
+			return model_path
+		src = Path(model_path)
+		if not src.exists():
+			return model_path
+		cache_dir = Path(".preview_cache")
+		cache_dir.mkdir(parents=True, exist_ok=True)
+		dst = cache_dir / src.name
+		# Overwrite if different file or missing
+		try:
+			shutil.copyfile(str(src), str(dst))
+		except Exception:
+			return model_path
+		return str(dst)
+	except Exception:
+		return model_path
+
+
+def _convert_to_glb_for_preview(model_path: str) -> str:
+	"""Convert arbitrary mesh to GLB for reliable web preview; fallback to cached original."""
+	try:
+		import trimesh  # type: ignore
+		from pathlib import Path
+		if not model_path:
+			return model_path
+		src = Path(model_path)
+		if not src.exists():
+			return model_path
+		cache_dir = Path(".preview_cache")
+		cache_dir.mkdir(parents=True, exist_ok=True)
+		out_path = cache_dir / (src.stem + ".glb")
+		loaded = trimesh.load(str(src), force='scene')
+		if isinstance(loaded, trimesh.Scene):
+			scene = loaded
+		else:
+			scene = trimesh.Scene(loaded)  # wrap single mesh
+		# Try export to GLB; if dependency missing, this may raise
+		scene.export(str(out_path))
+		if out_path.exists() and out_path.stat().st_size > 0:
+			return str(out_path)
+		return _prepare_preview_path(model_path)
+	except Exception:
+		# Any failure: use cached original
+		return _prepare_preview_path(model_path)
+
+
+def predict_model_3d(model_path: str, out_dir: str, num_views: int = 4, blender_path: str = ""):
+	if not model_path:
+		return "No model", [], None, gr.update(value=None)
 	if _model is None:
 		_load_latest_checkpoint(out_dir)
 	# Render views
 	try:
-		views = render_views(file_obj.name, image_size=_image_size, num_views=num_views)
+		views = render_views(model_path, image_size=_image_size, num_views=num_views, blender_path=(blender_path or None))
 	except Exception as exc:
-		return f"Render error: {exc}", [], None
+		return f"Render error: {exc}", [], None, gr.update(value=_convert_to_glb_for_preview(model_path))
 	# Predict per view
 	transform = _build_tf()
 	probs_list: List[torch.Tensor] = []
@@ -91,14 +149,18 @@ def predict_model_3d(file_obj, out_dir: str, num_views: int = 4):
 			probs = F.softmax(logits, dim=1)[0]
 			probs_list.append(probs)
 	if not probs_list:
-		return "No views rendered", [], None
+		return "No views rendered", [], None, gr.update(value=_convert_to_glb_for_preview(model_path))
 	avg = _aggregate_probs(probs_list)
 	top_prob, top_idx = torch.topk(avg, k=min(5, len(_classes)))
 	labels = [_classes[i] for i in top_idx.cpu().numpy().tolist()]
 	scores = [float(x) for x in top_prob.cpu().numpy().tolist()]
 	best = f"{labels[0]} ({scores[0]:.3f})" if labels else "N/A"
 	rows = [[l, f"{s:.3f}"] for l, s in zip(labels, scores)]
-	return best, rows, thumbs
+	return best, rows, thumbs, gr.update(value=_convert_to_glb_for_preview(model_path))
+
+
+def _model_file_path(model_path: str):
+	return gr.update(value=_convert_to_glb_for_preview(model_path) if model_path else None)
 
 
 def build_interface():
@@ -113,13 +175,18 @@ def build_interface():
 				table_i = gr.Dataframe(headers=["label", "probability"], label="Top-K", interactive=False)
 				btn_img.click(fn=predict_image, inputs=[img, out_dir], outputs=[pred_i, table_i])
 			with gr.TabItem("3D Model"):
-				model_file = gr.File(label="Mesh (.obj/.ply/.stl)")
+				model_file = gr.File(label="Mesh (.obj/.ply/.stl/.glb/.gltf)", file_types=[".obj", ".ply", ".stl", ".glb", ".gltf"], type="filepath")
+				model_view = gr.Model3D(label="3D Preview", height=420)
+				blender = gr.Textbox(value="", label="Blender Path (optional)")
 				num_views = gr.Slider(1, 12, value=4, step=1, label="Num Views")
 				btn_3d = gr.Button("Render + Predict")
 				pred_3d = gr.Textbox(label="Top Prediction")
 				table_3d = gr.Dataframe(headers=["label", "probability"], label="Top-K", interactive=False)
 				gallery = gr.Gallery(label="Rendered Views", columns=4, height=200)
-				btn_3d.click(fn=predict_model_3d, inputs=[model_file, out_dir, num_views], outputs=[pred_3d, table_3d, gallery])
+				# Update viewer immediately when a file is selected
+				model_file.change(fn=_model_file_path, inputs=[model_file], outputs=[model_view])
+				# Render + predict also updates the viewer (in case user loaded via URL/temp file)
+				btn_3d.click(fn=predict_model_3d, inputs=[model_file, out_dir, num_views, blender], outputs=[pred_3d, table_3d, gallery, model_view])
 	return demo
 
 

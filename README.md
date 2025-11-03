@@ -51,6 +51,8 @@ python -m src.app
 Opens a Gradio UI with two tabs:
 - Image: upload a single image and see predictions.
 - 3D Model: upload a simple mesh (.obj/.ply/.stl). The app renders multiple offscreen views via Open3D and aggregates predictions across views.
+  - If Open3D headless isn’t available on Windows, it falls back to pyrender+trimesh. You can also provide a Blender path for GPU-quality renders.
+ - Web Preview (Plotly): interactive, browser-based mesh viewer (no OpenGL needed). Useful when headless rendering isn’t available; not used for training snapshots.
 
 Notes: images are resized to 128 (CNN) or 224 (ViT-tiny). Tune via flags.
 
@@ -58,5 +60,6 @@ Notes: images are resized to 128 (CNN) or 224 (ViT-tiny). Tune via flags.
 - Requires `open3d` (added in `requirements.txt`).
 - Supported mesh formats tested: `.obj`, `.ply`, `.stl`.
 - The 3D tab renders a few azimuths around the model; predictions are averaged across views.
+ - Windows headless rendering: If you see EGL errors, the app automatically tries pyrender. For best results with NVIDIA GPUs, set the Blender path in the UI or export `BLENDER_PATH` environment variable to a `blender.exe` and the app will render via Blender in headless mode.
 
 

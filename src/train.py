@@ -76,10 +76,35 @@ def main():
 	parser.add_argument("--val_split", type=float, default=0.2)
 	parser.add_argument("--image_size", type=int, default=128)
 	parser.add_argument("--model", type=str, default="cnn", choices=["cnn", "vit_tiny"]) 
+	parser.add_argument("--allow_unlabeled", action="store_true", help="If no labels are found, create a dummy single-class dataset from any images under data_dir for smoke-testing.")
+	parser.add_argument("--unlabeled_class_name", type=str, default="object", help="Class name to assign when --allow_unlabeled is used.")
 	args = parser.parse_args()
 
 	_, _, _, out_dir = ensure_dirs(args.data_dir, args.out_dir)
-	labels_df, classes = load_or_build_labels_csv(args.data_dir)
+	try:
+		labels_df, classes = load_or_build_labels_csv(args.data_dir)
+	except FileNotFoundError:
+		if not args.allow_unlabeled:
+			raise
+		# Build a dummy single-class labels.csv by scanning for images under data_dir and data_dir/unlabeled
+		import glob
+		from pathlib import Path
+		exts = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+		candidates = []
+		for root in [args.data_dir, os.path.join(args.data_dir, "unlabeled")]:
+			for p in glob.glob(os.path.join(root, "**", "*.*"), recursive=True):
+				if os.path.splitext(p)[1].lower() in exts and os.path.isfile(p):
+					candidates.append(p)
+		if not candidates:
+			raise FileNotFoundError("No images found to create a dummy dataset. Place some images under data_dir or data_dir/unlabeled or provide labels.")
+		rows = []
+		for p in candidates:
+			rel = os.path.relpath(p, args.data_dir).replace("\\", "/")
+			rows.append({"image_path": rel, "label": args.unlabeled_class_name})
+		import pandas as pd
+		labels_df = pd.DataFrame(rows)
+		labels_df.to_csv(os.path.join(args.data_dir, "labels.csv"), index=False)
+		classes = [args.unlabeled_class_name]
 	# If using ViT, default to 224 unless overridden
 	if args.model == "vit_tiny" and ("image_size" not in vars(args) or args.image_size == 128):
 		args.image_size = 224
