@@ -67,6 +67,6 @@ If you use this work, please cite:
   title={ReLoop3D: 3D Active Learning with Feedback for Machine Learning},
   author={Abaryan},
   year={2025},
-  url={https://github.com/r-abaryan/CyberLLM-Agent}
+  url={https://github.com/r-abaryan/ReLoop-3D}
 }
 ```
