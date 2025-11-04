@@ -178,6 +178,101 @@ def predict_model_3d(model_path: str, out_dir: str, num_views: int = 4, blender_
 def _model_file_path(model_path: str):
 	return gr.update(value=_convert_to_glb_for_preview(model_path) if model_path else None)
 
+# -------- Active Learning (UI) --------
+
+def _acq_scores_from_probs(probs: torch.Tensor, method: str = "entropy", k: int = 2) -> float:
+	# probs: (C,) on CPU
+	method = (method or "entropy").lower()
+	p = probs.clamp_min(1e-8)
+	if method == "entropy":
+		return float(-(p * p.log()).sum().item())
+	# top-k margin: difference between top1 and top2 (smaller => more uncertain)
+	values, _ = torch.topk(p, k=min(max(k, 2), p.numel()))
+	margin = float(values[0].item() - values[1].item())
+	# Convert to uncertainty score where higher = more uncertain
+	return float(1.0 - margin)
+
+
+def _list_meshes(mesh_dir: str) -> List[str]:
+	if not mesh_dir or not os.path.isdir(mesh_dir):
+		return []
+	names = []
+	for f in os.listdir(mesh_dir):
+		fl = f.lower()
+		if fl.endswith((".obj", ".ply", ".stl", ".glb", ".gltf")):
+			names.append(os.path.join(mesh_dir, f))
+	names.sort()
+	return names
+
+
+def al_score_unlabeled(mesh_dir: str, out_dir: str, num_views: int, acq: str, k: int):
+	if _model is None:
+		_load_latest_checkpoint(out_dir)
+	paths = _list_meshes(mesh_dir)
+	if not paths:
+		return []
+	transform = _build_tf()
+	rows = []
+	with torch.no_grad():
+		for mp in paths:
+			try:
+				views = render_views(mp, image_size=_image_size, num_views=num_views)
+				probs_list: List[torch.Tensor] = []
+				for img in views:
+					ten = transform(img.convert("RGB")).unsqueeze(0).to(_device)
+					logits = _model(ten)
+					probs = F.softmax(logits, dim=1)[0].cpu()
+					probs_list.append(probs)
+				if not probs_list:
+					continue
+				avg = torch.stack(probs_list, dim=0).mean(dim=0)
+				score = _acq_scores_from_probs(avg, method=acq, k=k)
+				best_p, best_idx = torch.topk(avg, k=1)
+				pred = _classes[int(best_idx.item())] if _classes else ""
+				rows.append([mp, pred, float(score), ""])  # label to be filled
+			except Exception:
+				rows.append([mp, "", float("nan"), ""])  # keep placeholder
+	# Sort by uncertainty descending
+	rows.sort(key=lambda r: (-(r[2] if isinstance(r[2], float) else 0.0)))
+	return rows
+
+
+def al_apply_labels(table_rows, num_views: int, out_images: str):
+	# Accept pandas.DataFrame or list
+	rows_list: List[List[str]] = []
+	try:
+		import pandas as pd  # type: ignore
+		if hasattr(table_rows, "values"):
+			rows_list = table_rows.values.tolist()  # type: ignore[attr-defined]
+		elif isinstance(table_rows, list):
+			rows_list = table_rows
+		else:
+			rows_list = []
+	except Exception:
+		rows_list = table_rows if isinstance(table_rows, list) else []
+
+	os.makedirs(out_images, exist_ok=True)
+	applied = 0
+	for r in rows_list:
+		if not r or len(r) < 4:
+			continue
+		mp = str(r[0]).strip()
+		label = str(r[3]).strip()
+		if not mp or not label:
+			continue
+		label_sanitized = "".join(c for c in label if c.isalnum() or c in ("_", "-")) or "unknown"
+		label_dir = os.path.join(out_images, label_sanitized)
+		os.makedirs(label_dir, exist_ok=True)
+		try:
+			views = render_views(mp, image_size=_image_size, num_views=num_views)
+			stem = os.path.splitext(os.path.basename(mp))[0]
+			for i, img in enumerate(views):
+				img.convert("RGB").save(os.path.join(label_dir, f"{stem}_v{i}.png"))
+			applied += 1
+		except Exception:
+			pass
+	return f"Applied labels to {applied} meshes into {out_images}"
+
 
 def build_interface():
 	with gr.Blocks(title="3D Active Learning Playground") as demo:
@@ -210,6 +305,22 @@ def build_interface():
 				model_file.change(fn=_model_file_path, inputs=[model_file], outputs=[model_view])
 				btn_3d.click(fn=predict_model_3d, inputs=[model_file, out_dir, num_views, blender], outputs=[pred_3d, table_3d, gallery, model_view])
 				btn_clear.click(fn=_clear_caches, inputs=[], outputs=[cache_status])
+			with gr.TabItem("Active Learning"):
+				with gr.Row():
+					with gr.Column(scale=1):
+						mesh_dir = gr.Textbox(value="unlabeled_meshes", label="Unlabeled Mesh Directory")
+						acq = gr.Dropdown(choices=["entropy", "margin"], value="entropy", label="Acquisition Function")
+						k = gr.Number(value=2, precision=0, label="Top-k (for margin)")
+						num_views2 = gr.Slider(1, 12, value=4, step=1, label="Num Views")
+						btn_score = gr.Button("Score Unlabeled")
+						images_out = gr.Textbox(value="data/images", label="Images Out (apply labels)")
+						btn_apply = gr.Button("Apply Labels")
+					with gr.Column(scale=1):
+						queue = gr.Dataframe(headers=["model_path", "pred_label", "uncertainty", "label"], label="Labeling Queue", wrap=True)
+						status = gr.Markdown(visible=True)
+				# Wire scoring and apply
+				btn_score.click(fn=al_score_unlabeled, inputs=[mesh_dir, out_dir, num_views2, acq, k], outputs=[queue])
+				btn_apply.click(fn=al_apply_labels, inputs=[queue, num_views2, images_out], outputs=[status])
 	return demo
 
 
