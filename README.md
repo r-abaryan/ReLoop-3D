@@ -28,8 +28,7 @@ What you get:
 
 Notes for 3D tab:
 - Preview: the selected mesh is converted to a temporary `.glb` for robust browser viewing.
-- Rendering: the same geometry is normalized and rendered offscreen. Backends are tried in order: Blender (if provided) → Open3D → pyrender → matplotlib.
-- You can pass a Blender path (optional) for best visual fidelity on complex assets.
+- Rendering: the same geometry is normalized and rendered offscreen via Open3D.
 
 ### Train a model (toy example)
 This repo includes simple classifiers (CNN or ViT-tiny) trained on renderings. Adjust to your data as needed.

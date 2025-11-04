@@ -9,15 +9,9 @@ from PIL import Image
 from torchvision import transforms
 import gradio as gr
 
-# Allow running as a module (python -m src.app) or as a script (python src/app.py)
-try:
-	from .models.simple_cnn import SimpleShapeCNN  # type: ignore
-	from .models.transformer import create_vit_tiny_classifier  # type: ignore
-	from .three_d import render_views  # type: ignore
-except Exception:
-	from models.simple_cnn import SimpleShapeCNN
-	from models.transformer import create_vit_tiny_classifier
-	from three_d import render_views
+from models.simple_cnn import SimpleShapeCNN
+from models.transformer import create_vit_tiny_classifier
+from three_d import render_views
 
 _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _model = None
