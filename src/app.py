@@ -252,7 +252,21 @@ def al_apply_labels(table_rows, num_views: int, out_images: str):
 		rows_list = table_rows if isinstance(table_rows, list) else []
 
 	os.makedirs(out_images, exist_ok=True)
+	os.makedirs("annotations", exist_ok=True)
+	csv_path = os.path.join("annotations", "labeled.csv")
+	# Load existing labeled pairs to avoid duplicates
+	existing = set()
+	if os.path.isfile(csv_path):
+		try:
+			import csv as _csv
+			with open(csv_path, "r", encoding="utf-8") as f:
+				reader = _csv.reader(f)
+				existing = set(tuple(r) for r in reader if len(r) >= 2)
+		except Exception:
+			existing = set()
+
 	applied = 0
+	new_rows: List[Tuple[str, str]] = []
 	for r in rows_list:
 		if not r or len(r) < 4:
 			continue
@@ -269,9 +283,25 @@ def al_apply_labels(table_rows, num_views: int, out_images: str):
 			for i, img in enumerate(views):
 				img.convert("RGB").save(os.path.join(label_dir, f"{stem}_v{i}.png"))
 			applied += 1
+			pair = (mp, label_sanitized)
+			if pair not in existing:
+				new_rows.append(pair)
 		except Exception:
 			pass
-	return f"Applied labels to {applied} meshes into {out_images}"
+	# Append new rows
+	if new_rows:
+		try:
+			import csv as _csv
+			write_header = not os.path.isfile(csv_path) or os.path.getsize(csv_path) == 0
+			with open(csv_path, "a", newline="", encoding="utf-8") as f:
+				writer = _csv.writer(f)
+				if write_header:
+					writer.writerow(["model_path", "label"])
+				for mp, lab in new_rows:
+					writer.writerow([mp, lab])
+		except Exception:
+			pass
+	return f"Applied labels to {applied} meshes into {out_images}. Logged {len(new_rows)} entries at {csv_path}"
 
 
 def build_interface():
