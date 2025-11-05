@@ -330,7 +330,7 @@ def build_interface():
 				# Outputs under controls
 				pred_3d = gr.Textbox(label="Top Prediction")
 				table_3d = gr.Dataframe(headers=["label", "probability"], label="Top-K", interactive=False)
-				gallery = gr.Gallery(label="Rendered Views", columns=4, height=256)
+				gallery = gr.Gallery(label="Rendered Views", columns=4, height=300)
 				# Wiring
 				model_file.change(fn=_model_file_path, inputs=[model_file], outputs=[model_view])
 				btn_3d.click(fn=predict_model_3d, inputs=[model_file, out_dir, num_views, blender], outputs=[pred_3d, table_3d, gallery, model_view])

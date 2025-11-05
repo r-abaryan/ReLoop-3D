@@ -101,7 +101,6 @@ def main():
 		for p in candidates:
 			rel = os.path.relpath(p, args.data_dir).replace("\\", "/")
 			rows.append({"image_path": rel, "label": args.unlabeled_class_name})
-		import pandas as pd
 		labels_df = pd.DataFrame(rows)
 		labels_df.to_csv(os.path.join(args.data_dir, "labels.csv"), index=False)
 		classes = [args.unlabeled_class_name]
