@@ -94,7 +94,10 @@ def _prepare_preview_path(model_path: str) -> str:
 
 
 def _convert_to_glb_for_preview(model_path: str) -> str:
-	"""Convert arbitrary mesh to GLB for reliable web preview; fallback to cached original."""
+	"""Prefer original GLB/GLTF; otherwise convert to GLB for textured web preview.
+
+	If the source is OBJ with MTL/textures nearby, trimesh export packs textures into GLB.
+	"""
 	try:
 		import trimesh  # type: ignore
 		from pathlib import Path
@@ -103,22 +106,25 @@ def _convert_to_glb_for_preview(model_path: str) -> str:
 		src = Path(model_path)
 		if not src.exists():
 			return model_path
+		# If already a web-friendly format, return as-is
+		if src.suffix.lower() in {".glb", ".gltf"}:
+			return str(src)
 		cache_dir = Path(".preview_cache")
 		cache_dir.mkdir(parents=True, exist_ok=True)
 		out_path = cache_dir / (src.stem + ".glb")
+		# Load as scene to preserve materials; trimesh will try to resolve adjacent textures
 		loaded = trimesh.load(str(src), force='scene')
 		if isinstance(loaded, trimesh.Scene):
 			scene = loaded
 		else:
 			scene = trimesh.Scene(loaded)  # wrap single mesh
-		# Try export to GLB; if dependency missing, this may raise
+		# Export to GLB (binary glTF). Textures will be embedded when possible
 		scene.export(str(out_path))
 		if out_path.exists() and out_path.stat().st_size > 0:
 			return str(out_path)
-		return _prepare_preview_path(model_path)
+		return str(src)
 	except Exception:
-		# Any failure: use cached original
-		return _prepare_preview_path(model_path)
+		return model_path
 
 
 def _clear_caches():
