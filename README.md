@@ -59,11 +59,9 @@ Then retrain with the updated dataset.
 
 ### Troubleshooting
 - No 3D preview: ensure file is one of the supported formats. For `.gltf` with external textures, keep textures next to the file. The app converts to `.glb` for preview automatically.
-- Renders are blank: try a simpler mesh first; then provide a Blender path for higher-quality fallback. The app also falls back to `pyrender` and `matplotlib` if Open3D offscreen is unavailable.
 - Performance: reduce “Num Views”, or train the CNN model (128×128) instead of ViT (224×224).
 
 ### Useful scripts
-- `src/view_o3d.py`: quick local viewer for one or more meshes using Open3D.
 - `src/train.py`: trains a small classifier and writes `outputs/model_latest.pt`.
 - `src/app.py`: Gradio UI entrypoint.
 
