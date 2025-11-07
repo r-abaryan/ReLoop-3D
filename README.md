@@ -24,12 +24,16 @@ python -m src.app
 ```
 What you get:
 - Image tab: test the trained model on a single image.
-- 3D Model tab: upload `.obj/.ply/.stl/.glb/.gltf`, see a live web preview, render N views offscreen, and get predictions aggregated over views.
+- Image → 3D tab: convert image(s) to 3D mesh.
+  - Single mode: depth estimation (MiDaS) → mesh (fast).
+  - Multi-view mode: COLMAP reconstruction → mesh (better quality, requires COLMAP installed).
+- 3D Model tab: upload `.obj/.ply/.stl/.glb/.gltf`, see live preview, render N views, classify.
+- Active Learning tab: score uncertain meshes, label, apply to dataset, retrain.
 
-Notes for 3D tab:
-- Preview: the selected mesh is converted to a temporary `.glb` for robust browser viewing.
-- Rendering: the same geometry is normalized and rendered offscreen. Backends are tried in order: Blender (if provided) → Open3D → pyrender → matplotlib.
-- You can pass a Blender path (optional) for best visual fidelity on complex assets.
+Notes:
+- 3D preview converts to `.glb` for browser viewing.
+- Rendering backends: Blender (optional) → Open3D → pyrender → matplotlib.
+- Multi-view requires COLMAP: https://colmap.github.io/install.html
 
 ### Train a model (toy example)
 This repo includes simple classifiers (CNN or ViT-tiny) trained on renderings. Adjust to your data as needed.
@@ -42,28 +46,27 @@ python -m src.train --data_dir data --out_dir outputs --epochs 5 --model vit_tin
 ```
 The app loads `outputs/model_latest.pt` by default. To change the directory, edit the textbox at the top of the UI.
 
-### Active Learning (Phase 2)
-Phase 2 adds simple scripts for an optional feedback loop.
+### Active Learning
+Use the Active Learning tab in the UI:
+1. Score Unlabeled: point to mesh folder, choose acquisition (entropy/margin), click Score.
+2. Edit labels in the table.
+3. Apply Labels: renders meshes into `data/images/<label>/` and logs to `annotations/labeled.csv`.
+4. Retrain with the updated dataset.
 
-1) Select uncertain meshes into a queue CSV
-```bash
-python -m src.active_select --mesh_dir path/to/unlabeled_meshes --checkpoint outputs --num_views 4 --out_csv annotations/active_queue.csv
-```
-Fill the `label` column in the CSV.
-
-2) Apply labels: render meshes into dataset folders
-```bash
-python -m src.active_apply --queue annotations/active_queue.csv --out_images data/images --image_size 224 --num_views 4
-```
-Then retrain with the updated dataset.
+CLI scripts also available: `src/active_select.py`, `src/active_apply.py`.
 
 ### Troubleshooting
-- No 3D preview: ensure file is one of the supported formats. For `.gltf` with external textures, keep textures next to the file. The app converts to `.glb` for preview automatically.
-- Performance: reduce “Num Views”, or train the CNN model (128×128) instead of ViT (224×224).
+- No 3D preview: ensure file is supported format. For `.gltf` with external textures, keep textures next to file.
+- Renders blank: try simpler mesh first; provide Blender path for fallback.
+- Image→3D poor quality (single mode): use Multi-view mode with 10–30 images for better results (requires COLMAP).
+- Performance: reduce "Num Views", or use CNN (128×128) instead of ViT (224×224).
 
 ### Useful scripts
-- `src/train.py`: trains a small classifier and writes `outputs/model_latest.pt`.
+- `src/train.py`: train classifier, writes `outputs/model_latest.pt`.
 - `src/app.py`: Gradio UI entrypoint.
+- `src/depth_to_mesh.py`: single-image depth → mesh pipeline.
+- `src/multiview_to_mesh.py`: COLMAP multi-view → mesh pipeline.
+- `src/view_o3d.py`: quick local Open3D viewer for meshes.
 
 ### References
 - Open3D: https://github.com/isl-org/Open3D

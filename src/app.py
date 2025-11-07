@@ -12,6 +12,8 @@ import gradio as gr
 from models.simple_cnn import SimpleShapeCNN
 from models.transformer import create_vit_tiny_classifier
 from three_d import render_views
+from depth_to_mesh import image_to_mesh
+from multiview_to_mesh import multiview_to_mesh
 
 _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _model = None
@@ -304,6 +306,26 @@ def al_apply_labels(table_rows, num_views: int, out_images: str):
 	return f"Applied labels to {applied} meshes into {out_images}. Logged {len(new_rows)} entries at {csv_path}"
 
 
+def img_to_3d_handler(mode: str, single_img, multi_imgs, model_type: str, poisson_depth: int):
+	"""Image(s) → Mesh. Mode: 'Single' or 'Multi-view'."""
+	try:
+		os.makedirs("generated_meshes", exist_ok=True)
+		out_path = os.path.join("generated_meshes", "mesh.obj")
+		if mode == "Single":
+			if single_img is None:
+				return None, "No image provided."
+			image_to_mesh(single_img, out_path, model_type=model_type, poisson_depth=poisson_depth)
+			return out_path, f"Single-image mesh saved: {out_path}"
+		else:  # Multi-view
+			if not multi_imgs or len(multi_imgs) < 3:
+				return None, "Upload at least 3 images for multi-view reconstruction."
+			images = [Image.open(f.name) if hasattr(f, 'name') else f for f in multi_imgs]
+			multiview_to_mesh(images, out_path, poisson_depth=poisson_depth)
+			return out_path, f"Multi-view mesh saved: {out_path} (COLMAP)"
+	except Exception as exc:
+		return None, f"Error: {exc}"
+
+
 def build_interface():
 	with gr.Blocks(title="3D Active Learning Playground") as demo:
 		gr.Markdown("## 3D Active Learning Playground\nUpload an image or a simple 3D mesh; we'll render multiple views and classify.")
@@ -315,6 +337,22 @@ def build_interface():
 				pred_i = gr.Textbox(label="Top Prediction")
 				table_i = gr.Dataframe(headers=["label", "probability"], label="Top-K", interactive=False)
 				btn_img.click(fn=predict_image, inputs=[img, out_dir], outputs=[pred_i, table_i])
+			with gr.TabItem("Image → 3D"):
+				gr.Markdown("Convert image(s) to 3D mesh. Single: depth-based (fast). Multi-view: COLMAP reconstruction (better quality, requires COLMAP installed).")
+				mode = gr.Radio(choices=["Single", "Multi-view"], value="Single", label="Mode")
+				with gr.Row():
+					single_img = gr.Image(type="pil", label="Single Image", visible=True)
+					multi_imgs = gr.File(label="Multiple Images (3+)", file_count="multiple", visible=False)
+				model_type = gr.Dropdown(choices=["DPT_Large", "DPT_Hybrid", "MiDaS_small"], value="DPT_Large", label="Depth Model (Single mode only)")
+				poisson_depth = gr.Slider(6, 12, value=9, step=1, label="Poisson Depth")
+				btn_convert = gr.Button("Generate Mesh")
+				mesh_out = gr.File(label="Download Mesh")
+				status_3d = gr.Textbox(label="Status")
+				# Toggle visibility based on mode
+				def toggle_inputs(m):
+					return gr.update(visible=(m=="Single")), gr.update(visible=(m=="Multi-view"))
+				mode.change(fn=toggle_inputs, inputs=[mode], outputs=[single_img, multi_imgs])
+				btn_convert.click(fn=img_to_3d_handler, inputs=[mode, single_img, multi_imgs, model_type, poisson_depth], outputs=[mesh_out, status_3d])
 			with gr.TabItem("3D Model"):
 				with gr.Row():
 					with gr.Column(scale=1):

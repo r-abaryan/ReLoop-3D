@@ -18,4 +18,5 @@ src/Untitled-1.py
 src/view_o3d.py
 .preview_cache
 .render_cache
+generated_meshes
 doc/HOW_IT_WORKS.md
