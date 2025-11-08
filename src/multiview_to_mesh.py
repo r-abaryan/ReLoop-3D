@@ -20,18 +20,31 @@ import open3d as o3d
 
 
 def images_to_point_cloud(images: List[Image.Image]) -> o3d.geometry.PointCloud:
-	"""Combine multiple images into a single point cloud using Open3D feature matching + depth."""
-	# Simplified: merge all images as colored point clouds with depth from first image
-	# For production: use Open3D reconstruction pipeline with pose estimation
+	"""Combine multiple images into point cloud using GPU-accelerated MiDaS depth per image."""
+	import torch
+	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+	# Load MiDaS once for all images
+	midas = torch.hub.load("intel-isl/MiDaS", "DPT_Large", trust_repo=True)
+	midas.to(device).eval()
+	midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms", trust_repo=True)
+	transform = midas_transforms.dpt_transform
+	
 	combined = o3d.geometry.PointCloud()
 	
 	for idx, img in enumerate(images):
-		# Convert to numpy
 		rgb = np.array(img.convert("RGB"))
 		h, w = rgb.shape[:2]
 		
-		# Simple depth: assume planar at distance proportional to image index (orbit simulation)
-		depth = np.ones((h, w), dtype=np.float32) * (2.0 + idx * 0.1)
+		# GPU depth estimation
+		input_batch = transform(rgb).to(device)
+		with torch.no_grad():
+			prediction = midas(input_batch)
+			prediction = torch.nn.functional.interpolate(
+				prediction.unsqueeze(1), size=(h, w), mode="bicubic", align_corners=False
+			).squeeze()
+		depth = prediction.cpu().numpy()
+		depth = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
+		depth = depth * 5.0  # scale for visible range
 		
 		# Create RGBD
 		color_o3d = o3d.geometry.Image(rgb.astype(np.uint8))
@@ -40,15 +53,15 @@ def images_to_point_cloud(images: List[Image.Image]) -> o3d.geometry.PointCloud:
 			color_o3d, depth_o3d, depth_scale=1.0, depth_trunc=10.0, convert_rgb_to_intensity=False
 		)
 		
-		# Intrinsic (assume standard focal length)
+		# Intrinsic
 		fx = fy = max(w, h) * 0.8
 		cx, cy = w / 2.0, h / 2.0
 		intrinsic = o3d.camera.PinholeCameraIntrinsic(w, h, fx, fy, cx, cy)
 		
-		# Generate point cloud for this view
+		# Generate point cloud
 		pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic)
 		
-		# Rotate around Y axis to simulate orbit
+		# Rotate to simulate orbit
 		angle = 2.0 * np.pi * (idx / len(images))
 		R = o3d.geometry.get_rotation_matrix_from_axis_angle([0, angle, 0])
 		pcd.rotate(R, center=(0, 0, 0))
