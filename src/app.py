@@ -321,7 +321,7 @@ def img_to_3d_handler(mode: str, single_img, multi_imgs, model_type: str, poisso
 				return None, "Upload at least 3 images for multi-view reconstruction."
 			images = [Image.open(f.name) if hasattr(f, 'name') else f for f in multi_imgs]
 			multiview_to_mesh(images, out_path, poisson_depth=poisson_depth)
-			return out_path, f"Multi-view mesh saved: {out_path} (COLMAP)"
+			return out_path, f"Multi-view mesh saved: {out_path} (Open3D)"
 	except Exception as exc:
 		return None, f"Error: {exc}"
 
@@ -338,7 +338,7 @@ def build_interface():
 				table_i = gr.Dataframe(headers=["label", "probability"], label="Top-K", interactive=False)
 				btn_img.click(fn=predict_image, inputs=[img, out_dir], outputs=[pred_i, table_i])
 			with gr.TabItem("Image → 3D"):
-				gr.Markdown("Convert image(s) to 3D mesh. Single: depth-based (fast). Multi-view: COLMAP reconstruction (better quality, requires COLMAP installed).")
+				gr.Markdown("Convert image(s) to 3D mesh. Single: depth-based (fast). Multi-view: Open3D point cloud fusion (better quality).")
 				mode = gr.Radio(choices=["Single", "Multi-view"], value="Single", label="Mode")
 				with gr.Row():
 					single_img = gr.Image(type="pil", label="Single Image", visible=True)
