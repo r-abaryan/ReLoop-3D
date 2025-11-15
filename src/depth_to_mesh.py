@@ -74,6 +74,11 @@ def reconstruct_mesh_poisson(pcd, depth: int = 9):
 	# Smooth and simplify
 	mesh = mesh.filter_smooth_simple(number_of_iterations=2)
 	mesh.compute_vertex_normals()
+	# Flip Y and Z axes to correct image-to-mesh orientation for display
+	flip_matrix = np.eye(4, dtype=np.float64)
+	flip_matrix[1, 1] = -1.0
+	flip_matrix[2, 2] = -1.0
+	mesh.transform(flip_matrix)
 	return mesh
 
 
