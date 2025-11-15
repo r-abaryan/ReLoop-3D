@@ -18,6 +18,18 @@ import numpy as np
 from PIL import Image
 import open3d as o3d
 
+# Constants for point cloud and mesh processing
+DEPTH_SCALE = 5.0                # Scale factor for MiDaS depth to visible range
+VOXEL_SIZE = 0.02                # Point cloud downsampling voxel size
+OUTLIER_NEIGHBORS = 20           # Statistical outlier removal neighbors
+OUTLIER_STD_RATIO = 2.0          # Outlier removal std ratio
+NORMAL_RADIUS = 0.1              # KDTree search radius for normals
+NORMAL_MAX_NN = 30               # Max nearest neighbors for normal estimation
+NORMAL_TANGENT_SAMPLES = 30      # Tangent plane samples for orientation
+DENSITY_QUANTILE = 0.15          # Quantile for removing low-density vertices
+MESH_SMOOTH_ITERATIONS = 2       # Number of smoothing iterations
+CAMERA_ELEVATION = 20.0          # Camera elevation in degrees
+
 
 def images_to_point_cloud(images: List[Image.Image]) -> o3d.geometry.PointCloud:
 	"""Combine multiple images into point cloud using GPU-accelerated MiDaS depth per image."""
@@ -44,7 +56,7 @@ def images_to_point_cloud(images: List[Image.Image]) -> o3d.geometry.PointCloud:
 			).squeeze()
 		depth = prediction.cpu().numpy()
 		depth = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
-		depth = depth * 5.0  # scale for visible range
+		depth = depth * DEPTH_SCALE
 		
 		# Create RGBD
 		color_o3d = o3d.geometry.Image(rgb.astype(np.uint8))
@@ -69,20 +81,20 @@ def images_to_point_cloud(images: List[Image.Image]) -> o3d.geometry.PointCloud:
 		combined += pcd
 	
 	# Downsample and clean
-	combined = combined.voxel_down_sample(voxel_size=0.02)
-	combined, _ = combined.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
+	combined = combined.voxel_down_sample(voxel_size=VOXEL_SIZE)
+	combined, _ = combined.remove_statistical_outlier(nb_neighbors=OUTLIER_NEIGHBORS, std_ratio=OUTLIER_STD_RATIO)
 	return combined
 
 
 def point_cloud_to_mesh(pcd: o3d.geometry.PointCloud, poisson_depth: int = 9) -> o3d.geometry.TriangleMesh:
 	"""Convert point cloud to mesh using Poisson reconstruction."""
-	pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
-	pcd.orient_normals_consistent_tangent_plane(30)
+	pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=NORMAL_RADIUS, max_nn=NORMAL_MAX_NN))
+	pcd.orient_normals_consistent_tangent_plane(NORMAL_TANGENT_SAMPLES)
 	mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=poisson_depth, linear_fit=True)
 	# Remove low-density artifacts
-	vertices_to_remove = densities < np.quantile(densities, 0.15)
+	vertices_to_remove = densities < np.quantile(densities, DENSITY_QUANTILE)
 	mesh.remove_vertices_by_mask(vertices_to_remove)
-	mesh = mesh.filter_smooth_simple(number_of_iterations=2)
+	mesh = mesh.filter_smooth_simple(number_of_iterations=MESH_SMOOTH_ITERATIONS)
 	mesh.compute_vertex_normals()
 	# Flip Y and Z axes to correct image-to-mesh orientation for display
 	flip_matrix = np.eye(4, dtype=np.float64)
@@ -92,7 +104,7 @@ def point_cloud_to_mesh(pcd: o3d.geometry.PointCloud, poisson_depth: int = 9) ->
 	return mesh
 
 
-def multiview_to_mesh(images: List[Image.Image], out_path: str, poisson_depth: int = 9):
+def multiview_to_mesh(images: List[Image.Image], out_path: str, poisson_depth: int = 9) -> str:
 	"""Full pipeline: multiple images → Open3D point cloud → mesh."""
 	pcd = images_to_point_cloud(images)
 	mesh = point_cloud_to_mesh(pcd, poisson_depth=poisson_depth)

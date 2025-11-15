@@ -21,7 +21,7 @@ _classes: List[str] = []
 _image_size: int = 128
 
 
-def _load_latest_checkpoint(out_dir: str):
+def _load_latest_checkpoint(out_dir: str) -> None:
 	global _model, _classes, _image_size
 	latest = os.path.join(out_dir, "model_latest.pt")
 	if not os.path.isfile(latest):
@@ -40,7 +40,7 @@ def _load_latest_checkpoint(out_dir: str):
 	_model.eval()
 
 
-def _build_tf():
+def _build_tf() -> transforms.Compose:
 	return transforms.Compose([
 		transforms.Resize((_image_size, _image_size)),
 		transforms.ToTensor(),
@@ -67,6 +67,7 @@ def predict_image(img: Image.Image, out_dir: str) -> Tuple[str, list]:
 
 
 def _aggregate_probs(probs_list: List[torch.Tensor]) -> torch.Tensor:
+	"""Aggregate probabilities across multiple views by averaging."""
 	# Mean of probabilities across views
 	stack = torch.stack(probs_list, dim=0)
 	return stack.mean(dim=0)
@@ -123,7 +124,7 @@ def _convert_to_glb_for_preview(model_path: str) -> str:
 		return _prepare_preview_path(model_path)
 
 
-def _clear_caches():
+def _clear_caches() -> gr.update:
 	"""Remove preview/render caches to free space and force regeneration."""
 	import shutil
 	removed = []
@@ -145,7 +146,7 @@ def _gallery_update(images: List[Image.Image], num_views: int) -> gr.update:
 	return gr.update(value=images, height=height, columns=cols)
 
 
-def predict_model_3d(model_path: str, out_dir: str, num_views: int = 4, blender_path: str = ""):
+def predict_model_3d(model_path: str, out_dir: str, num_views: int = 4, blender_path: str = "") -> Tuple[str, list, gr.update, gr.update]:
 	if not model_path:
 		return "No model", [], None, gr.update(value=None)
 	if _model is None:
@@ -177,7 +178,7 @@ def predict_model_3d(model_path: str, out_dir: str, num_views: int = 4, blender_
 	return best, rows, _gallery_update(thumbs, num_views), gr.update(value=_convert_to_glb_for_preview(model_path))
 
 
-def _model_file_path(model_path: str):
+def _model_file_path(model_path: str) -> gr.update:
 	return gr.update(value=_convert_to_glb_for_preview(model_path) if model_path else None)
 
 # -------- Active Learning (UI) --------
@@ -196,6 +197,7 @@ def _acq_scores_from_probs(probs: torch.Tensor, method: str = "entropy", k: int 
 
 
 def _list_meshes(mesh_dir: str) -> List[str]:
+	"""List all supported 3D model files in directory."""
 	if not mesh_dir or not os.path.isdir(mesh_dir):
 		return []
 	names = []
@@ -207,7 +209,7 @@ def _list_meshes(mesh_dir: str) -> List[str]:
 	return names
 
 
-def al_score_unlabeled(mesh_dir: str, out_dir: str, num_views: int, acq: str, k: int):
+def al_score_unlabeled(mesh_dir: str, out_dir: str, num_views: int, acq: str, k: int) -> List[List]:
 	if _model is None:
 		_load_latest_checkpoint(out_dir)
 	paths = _list_meshes(mesh_dir)
@@ -239,7 +241,7 @@ def al_score_unlabeled(mesh_dir: str, out_dir: str, num_views: int, acq: str, k:
 	return rows
 
 
-def al_apply_labels(table_rows, num_views: int, out_images: str):
+def al_apply_labels(table_rows, num_views: int, out_images: str) -> str:
 	# Accept pandas.DataFrame or list
 	rows_list: List[List[str]] = []
 	try:
@@ -306,7 +308,7 @@ def al_apply_labels(table_rows, num_views: int, out_images: str):
 	return f"Applied labels to {applied} meshes into {out_images}. Logged {len(new_rows)} entries at {csv_path}"
 
 
-def img_to_3d_handler(mode: str, single_img, multi_imgs, model_type: str, poisson_depth: int):
+def img_to_3d_handler(mode: str, single_img, multi_imgs, model_type: str, poisson_depth: int) -> Tuple[str, str]:
 	"""Image(s) → Mesh. Mode: 'Single' or 'Multi-view'."""
 	try:
 		os.makedirs("generated_meshes", exist_ok=True)
@@ -326,7 +328,7 @@ def img_to_3d_handler(mode: str, single_img, multi_imgs, model_type: str, poisso
 		return None, f"Error: {exc}"
 
 
-def build_interface():
+def build_interface() -> gr.Blocks:
 	with gr.Blocks(title="3D Active Learning Playground") as demo:
 		gr.Markdown("## 3D Active Learning Playground\nUpload an image or a simple 3D mesh; we'll render multiple views and classify.")
 		out_dir = gr.Textbox(value="outputs", label="Checkpoint Directory")
@@ -395,5 +397,4 @@ def build_interface():
 if __name__ == "__main__":
 	demo = build_interface()
 	demo.launch()
-
 
