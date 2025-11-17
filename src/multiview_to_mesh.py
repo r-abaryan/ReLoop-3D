@@ -59,8 +59,10 @@ def images_to_point_cloud_mvs(images: List[Image.Image]) -> o3d.geometry.PointCl
 	import torch
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	
-	# Convert images to numpy
-	images_np = [np.array(img.convert("RGB")) for img in images]
+	# Standardize image size (resize all to same dimensions for consistency)
+	target_size = (720, 540)  # (width, height)
+	images_resized = [img.convert("RGB").resize(target_size) for img in images]
+	images_np = [np.array(img) for img in images_resized]
 	h, w = images_np[0].shape[:2]
 	
 	# Estimate depths using MiDaS (single model load)
@@ -80,6 +82,14 @@ def images_to_point_cloud_mvs(images: List[Image.Image]) -> o3d.geometry.PointCl
 		depth = prediction.cpu().numpy()
 		depth = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
 		depth = depth * 4.0  # Scale for visible range
+		
+		# Ensure depth matches RGB dimensions exactly
+		if depth.shape != (h, w):
+			from PIL import Image as PILImage
+			depth_img = PILImage.fromarray((depth * 255).astype(np.uint8))
+			depth_img = depth_img.resize((w, h))
+			depth = np.array(depth_img).astype(np.float32) / 255.0
+		
 		depths.append(depth)
 	
 	# Create intrinsic matrix (assume fixed intrinsics)
@@ -124,6 +134,13 @@ def images_to_point_cloud_mvs(images: List[Image.Image]) -> o3d.geometry.PointCl
 	
 	# Integrate each depth map
 	for idx, (img_np, depth) in enumerate(zip(images_np, depths)):
+		# Validate dimensions match
+		if img_np.shape[:2] != depth.shape:
+			raise ValueError(
+				f"Image {idx}: RGB shape {img_np.shape[:2]} != depth shape {depth.shape}. "
+				f"Resizing depth to match RGB."
+			)
+		
 		# Create RGBD image
 		color_o3d = o3d.geometry.Image(img_np.astype(np.uint8))
 		depth_o3d = o3d.geometry.Image(depth.astype(np.float32))
