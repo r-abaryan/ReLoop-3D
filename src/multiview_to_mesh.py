@@ -26,8 +26,9 @@ NORMAL_MAX_NN = 30               # Max nearest neighbors for normal estimation
 NORMAL_TANGENT_SAMPLES = 30      # Tangent plane samples for orientation
 DENSITY_QUANTILE = 0.15          # Quantile for removing low-density vertices
 MESH_SMOOTH_ITERATIONS = 2       # Number of smoothing iterations
-TSDF_TRUNC = 0.04                # TSDF truncation distance
-MAX_DEPTH = 8.0                  # Max depth for reconstruction
+TSDF_TRUNC = 0.06                # TSDF truncation distance (larger = more lenient fusion)
+MAX_DEPTH = 5.0                  # Max depth for reconstruction
+MESH_DENSITY_THRESHOLD = 0.05    # Aggressive density filtering
 
 
 def estimate_depth_midas(image_np: np.ndarray, device) -> np.ndarray:
@@ -82,6 +83,15 @@ def images_to_point_cloud_mvs(images: List[Image.Image]) -> o3d.geometry.PointCl
 		depth = prediction.cpu().numpy()
 		depth = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
 		depth = depth * 4.0  # Scale for visible range
+		
+		# Apply bilateral filtering to reduce noise while preserving edges
+		try:
+			import cv2
+			depth_uint8 = (depth * 255).astype(np.uint8)
+			depth_filtered = cv2.bilateralFilter(depth_uint8, d=9, sigmaColor=75, sigmaSpace=75)
+			depth = depth_filtered.astype(np.float32) / 255.0
+		except ImportError:
+			pass  # cv2 not available, use raw depth
 		
 		# Ensure depth matches RGB dimensions exactly
 		if depth.shape != (h, w):
@@ -155,14 +165,35 @@ def images_to_point_cloud_mvs(images: List[Image.Image]) -> o3d.geometry.PointCl
 			extrinsics[idx]
 		)
 	
-	# Extract mesh and convert to point cloud
+	# Extract mesh from TSDF volume
 	mesh = volume.extract_triangle_mesh()
-	pcd = mesh.sample_points_uniformly(number_of_points=500000)
 	
-	# Clean up
+	# Remove isolated/small components (noise)
+	mesh.remove_degenerate_triangles()
+	mesh.remove_duplicated_vertices()
+	mesh.remove_unreferenced_vertices()
+	
+	# Keep only the largest connected component
+	try:
+		triangle_clusters = mesh.cluster_connected_triangles()
+		triangle_clusters = np.asarray(triangle_clusters)
+		max_cluster = np.argmax(np.bincount(triangle_clusters))
+		mesh_largest = mesh.select_by_index(np.where(triangle_clusters == max_cluster)[0])
+		mesh = mesh_largest
+	except Exception:
+		pass  # If clustering fails, use full mesh
+	
+	# Sample points from cleaned mesh
+	pcd = mesh.sample_points_uniformly(number_of_points=300000)
+	
+	# Aggressive outlier removal (multiple passes)
 	pcd, _ = pcd.remove_statistical_outlier(
 		nb_neighbors=OUTLIER_NEIGHBORS,
 		std_ratio=OUTLIER_STD_RATIO
+	)
+	pcd, _ = pcd.remove_statistical_outlier(
+		nb_neighbors=10,
+		std_ratio=1.5
 	)
 	pcd = pcd.voxel_down_sample(voxel_size=VOXEL_SIZE)
 	
