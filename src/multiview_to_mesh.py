@@ -17,16 +17,51 @@ import open3d as o3d
 import cv2
 import torch
 
-# Constants
-VOXEL_SIZE = 0.015  # Finer voxel size for better quality
-OUTLIER_NEIGHBORS = 30
-OUTLIER_STD_RATIO = 2.5
-NORMAL_RADIUS = 0.08
-NORMAL_MAX_NN = 50
-NORMAL_TANGENT_SAMPLES = 50
-DENSITY_QUANTILE = 0.1  # Keep more points
-MESH_SMOOTH_ITERATIONS = 3
-ICP_THRESHOLD = 0.05  # For point cloud alignment
+# Constants - can be adjusted based on image count
+DEFAULT_VOXEL_SIZE = 0.015
+DEFAULT_OUTLIER_NEIGHBORS = 30
+DEFAULT_OUTLIER_STD_RATIO = 2.5
+DEFAULT_NORMAL_RADIUS = 0.08
+DEFAULT_NORMAL_MAX_NN = 50
+DEFAULT_NORMAL_TANGENT_SAMPLES = 50
+DEFAULT_DENSITY_QUANTILE = 0.1
+DEFAULT_MESH_SMOOTH_ITERATIONS = 3
+DEFAULT_ICP_THRESHOLD = 0.05
+
+# Global registration parameters
+RANSAC_DISTANCE_THRESHOLD = 0.05
+RANSAC_N_ITERATIONS = 100000
+RANSAC_CONFIDENCE = 0.999
+
+
+def get_adaptive_parameters(num_images: int) -> dict:
+	"""Adjust reconstruction parameters based on number of input images."""
+	params = {
+		'voxel_size': DEFAULT_VOXEL_SIZE,
+		'outlier_neighbors': DEFAULT_OUTLIER_NEIGHBORS,
+		'outlier_std_ratio': DEFAULT_OUTLIER_STD_RATIO,
+		'normal_radius': DEFAULT_NORMAL_RADIUS,
+		'normal_max_nn': DEFAULT_NORMAL_MAX_NN,
+		'normal_tangent_samples': DEFAULT_NORMAL_TANGENT_SAMPLES,
+		'density_quantile': DEFAULT_DENSITY_QUANTILE,
+		'mesh_smooth_iterations': DEFAULT_MESH_SMOOTH_ITERATIONS,
+		'icp_threshold': DEFAULT_ICP_THRESHOLD,
+	}
+	
+	# Adjust based on image count
+	if num_images >= 8:
+		# More images = can be more aggressive with filtering
+		params['voxel_size'] = 0.012  # Finer detail
+		params['density_quantile'] = 0.05  # Keep more points
+		params['mesh_smooth_iterations'] = 2  # Less smoothing needed
+	elif num_images <= 3:
+		# Fewer images = need more conservative filtering
+		params['voxel_size'] = 0.02  # Coarser to avoid gaps
+		params['density_quantile'] = 0.15  # More aggressive filtering
+		params['mesh_smooth_iterations'] = 4  # More smoothing
+	
+	return params
+
 
 
 def estimate_depth_midas(image_np: np.ndarray, midas, transform, device) -> np.ndarray:
@@ -138,51 +173,118 @@ def estimate_transform_from_features(img1: np.ndarray, img2: np.ndarray) -> Tupl
 		return np.eye(4), False
 
 
+def global_registration(source: o3d.geometry.PointCloud, target: o3d.geometry.PointCloud, 
+                        voxel_size: float) -> np.ndarray:
+	"""Global registration using FPFH features and RANSAC."""
+	try:
+		# Downsample
+		source_down = source.voxel_down_sample(voxel_size)
+		target_down = target.voxel_down_sample(voxel_size)
+		
+		# Estimate normals
+		radius_normal = voxel_size * 2
+		source_down.estimate_normals(
+			o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=30))
+		target_down.estimate_normals(
+			o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=30))
+		
+		# Compute FPFH features
+		radius_feature = voxel_size * 5
+		source_fpfh = o3d.pipelines.registration.compute_fpfh_feature(
+			source_down,
+			o3d.geometry.KDTreeSearchParamHybrid(radius=radius_feature, max_nn=100))
+		target_fpfh = o3d.pipelines.registration.compute_fpfh_feature(
+			target_down,
+			o3d.geometry.KDTreeSearchParamHybrid(radius=radius_feature, max_nn=100))
+		
+		# RANSAC registration
+		result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
+			source_down, target_down, source_fpfh, target_fpfh,
+			True, RANSAC_DISTANCE_THRESHOLD,
+			o3d.pipelines.registration.TransformationEstimationPointToPoint(False),
+			3, [
+				o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
+				o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(RANSAC_DISTANCE_THRESHOLD)
+			],
+			o3d.pipelines.registration.RANSACConvergenceCriteria(RANSAC_N_ITERATIONS, RANSAC_CONFIDENCE)
+		)
+		return result.transformation
+	except Exception as e:
+		print(f"Global registration failed: {e}, using identity")
+		return np.eye(4)
+
+
 def align_point_clouds_icp(source: o3d.geometry.PointCloud, target: o3d.geometry.PointCloud, 
-                           init_transform: np.ndarray = None) -> o3d.geometry.PointCloud:
-	"""Align source point cloud to target using ICP."""
+                           init_transform: np.ndarray = None, voxel_size: float = DEFAULT_VOXEL_SIZE,
+                           icp_threshold: float = DEFAULT_ICP_THRESHOLD) -> o3d.geometry.PointCloud:
+	"""Align source point cloud to target using ICP with optional global registration."""
 	if init_transform is None:
 		init_transform = np.eye(4)
 	
+	# Try global registration first for better initialization
+	if len(source.points) > 1000 and len(target.points) > 1000:
+		global_transform = global_registration(source, target, voxel_size * 3)
+		# Combine with initial transform
+		init_transform = global_transform @ init_transform
+	
 	# Downsample for faster ICP
-	source_down = source.voxel_down_sample(voxel_size=VOXEL_SIZE * 2)
-	target_down = target.voxel_down_sample(voxel_size=VOXEL_SIZE * 2)
+	source_down = source.voxel_down_sample(voxel_size=voxel_size * 2)
+	target_down = target.voxel_down_sample(voxel_size=voxel_size * 2)
 	
 	# Estimate normals for point-to-plane ICP
-	source_down.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=NORMAL_RADIUS * 2, max_nn=30))
-	target_down.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=NORMAL_RADIUS * 2, max_nn=30))
+	normal_radius = voxel_size * 5
+	source_down.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=normal_radius, max_nn=30))
+	target_down.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=normal_radius, max_nn=30))
 	
 	# Point-to-plane ICP
 	try:
 		reg = o3d.pipelines.registration.registration_icp(
-			source_down, target_down, ICP_THRESHOLD, init_transform,
+			source_down, target_down, icp_threshold, init_transform,
 			o3d.pipelines.registration.TransformationEstimationPointToPlane(),
 			o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=100)
 		)
 		
 		# Apply transformation to original source
 		source_aligned = source.transform(reg.transformation)
+		print(f"    ICP fitness: {reg.fitness:.3f}, RMSE: {reg.inlier_rmse:.4f}")
 		return source_aligned
 	except Exception as e:
 		print(f"ICP alignment failed: {e}, using initial transform")
 		return source.transform(init_transform)
 
 
-def images_to_point_cloud(images: List[Image.Image]) -> o3d.geometry.PointCloud:
+def images_to_point_cloud(images: List[Image.Image], progress_callback=None) -> o3d.geometry.PointCloud:
 	"""
 	Multi-view reconstruction with proper alignment.
-	Uses feature matching + ICP to align point clouds from different views.
+	Uses feature matching + global registration + ICP to align point clouds.
+	
+	Args:
+		images: List of PIL images from different viewpoints
+		progress_callback: Optional callback function(step, total, message)
 	"""
 	import torch
 	
-	# Standardize size
-	target_size = (800, 600)  # Higher resolution for better quality
+	# Get adaptive parameters
+	params = get_adaptive_parameters(len(images))
+	
+	def report_progress(step, total, msg):
+		if progress_callback:
+			progress_callback(step, total, msg)
+		else:
+			print(msg)
+	
+	# Standardize size - adaptive based on image count
+	if len(images) >= 6:
+		target_size = (640, 480)  # Lower res for many images to save memory
+	else:
+		target_size = (800, 600)  # Higher resolution for better quality
+	
 	images_resized = [img.convert("RGB").resize(target_size) for img in images]
 	images_np = [np.array(img) for img in images_resized]
 	
 	# Load MiDaS once
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	print("Loading MiDaS depth model...")
+	report_progress(0, len(images) + 3, "Loading MiDaS depth model...")
 	midas = torch.hub.load("intel-isl/MiDaS", "DPT_Large", trust_repo=True)
 	midas.to(device).eval()
 	midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms", trust_repo=True)
@@ -190,10 +292,10 @@ def images_to_point_cloud(images: List[Image.Image]) -> o3d.geometry.PointCloud:
 	
 	# Generate point clouds for all images
 	point_clouds = []
-	print(f"Generating point clouds from {len(images_np)} images...")
+	report_progress(1, len(images) + 3, f"Generating point clouds from {len(images_np)} images...")
 	
 	for idx, img_np in enumerate(images_np):
-		print(f"  Processing image {idx + 1}/{len(images_np)}...")
+		report_progress(2 + idx, len(images) + 3, f"Processing image {idx + 1}/{len(images_np)}...")
 		depth = estimate_depth_midas(img_np, midas, transform, device)
 		pcd = depth_to_pcd(img_np, depth)
 		
@@ -204,7 +306,7 @@ def images_to_point_cloud(images: List[Image.Image]) -> o3d.geometry.PointCloud:
 		raise ValueError("Failed to create any point clouds")
 	
 	# Start with the first point cloud as reference
-	print("Aligning and merging point clouds...")
+	report_progress(len(images) + 2, len(images) + 3, "Aligning and merging point clouds...")
 	combined = point_clouds[0][0]
 	
 	# Align and merge subsequent point clouds
@@ -212,7 +314,7 @@ def images_to_point_cloud(images: List[Image.Image]) -> o3d.geometry.PointCloud:
 		pcd, img_np = point_clouds[idx]
 		prev_img = images_np[idx - 1]
 		
-		print(f"  Aligning point cloud {idx + 1}/{len(point_clouds)}...")
+		# Progress is already reported above
 		
 		# Try to estimate transformation from features
 		T, success = estimate_transform_from_features(prev_img, img_np)
@@ -225,20 +327,22 @@ def images_to_point_cloud(images: List[Image.Image]) -> o3d.geometry.PointCloud:
 			T[:3, :3] = R
 			print(f"    Feature matching failed, using orbital positioning")
 		
-		# Align using ICP with initial transform
-		pcd_aligned = align_point_clouds_icp(pcd, combined, T)
+		# Align using ICP with initial transform and adaptive parameters
+		pcd_aligned = align_point_clouds_icp(pcd, combined, T, 
+		                                     voxel_size=params['voxel_size'],
+		                                     icp_threshold=params['icp_threshold'])
 		
 		# Merge
 		combined += pcd_aligned
 	
 	# Final cleanup and optimization
-	print("Final point cloud cleanup...")
-	combined = combined.voxel_down_sample(voxel_size=VOXEL_SIZE)
+	report_progress(len(images) + 3, len(images) + 3, "Final point cloud cleanup...")
+	combined = combined.voxel_down_sample(voxel_size=params['voxel_size'])
 	
-	if len(combined.points) > OUTLIER_NEIGHBORS:
+	if len(combined.points) > params['outlier_neighbors']:
 		combined, _ = combined.remove_statistical_outlier(
-			nb_neighbors=OUTLIER_NEIGHBORS, 
-			std_ratio=OUTLIER_STD_RATIO
+			nb_neighbors=params['outlier_neighbors'], 
+			std_ratio=params['outlier_std_ratio']
 		)
 	
 	# Remove duplicate points
@@ -250,25 +354,42 @@ def images_to_point_cloud(images: List[Image.Image]) -> o3d.geometry.PointCloud:
 	return combined
 
 
-def point_cloud_to_mesh(pcd: o3d.geometry.PointCloud, poisson_depth: int = 9) -> o3d.geometry.TriangleMesh:
+def point_cloud_to_mesh(pcd: o3d.geometry.PointCloud, poisson_depth: int = 9, 
+                        fill_holes: bool = True, progress_callback=None) -> o3d.geometry.TriangleMesh:
 	"""
-	High-quality Poisson surface reconstruction.
+	High-quality Poisson surface reconstruction with post-processing.
 	Creates a smooth, watertight mesh from the point cloud.
+	
+	Args:
+		pcd: Input point cloud
+		poisson_depth: Poisson reconstruction depth (6-12)
+		fill_holes: Whether to attempt hole filling
+		progress_callback: Optional callback function
 	"""
-	print("Estimating normals for mesh reconstruction...")
+	def report_progress(msg):
+		if progress_callback:
+			progress_callback(0, 1, msg)
+		else:
+			print(msg)
+	
+	# Get adaptive parameters
+	num_points = len(pcd.points)
+	params = get_adaptive_parameters(3)  # Use default params
+	
+	report_progress("Estimating normals for mesh reconstruction...")
 	
 	# Estimate normals with better parameters
 	pcd.estimate_normals(
 		search_param=o3d.geometry.KDTreeSearchParamHybrid(
-			radius=NORMAL_RADIUS,
-			max_nn=NORMAL_MAX_NN
+			radius=params['normal_radius'],
+			max_nn=params['normal_max_nn']
 		)
 	)
 	
 	# Orient normals consistently
-	pcd.orient_normals_consistent_tangent_plane(NORMAL_TANGENT_SAMPLES)
+	pcd.orient_normals_consistent_tangent_plane(params['normal_tangent_samples'])
 	
-	print(f"Running Poisson reconstruction (depth={poisson_depth})...")
+	report_progress(f"Running Poisson reconstruction (depth={poisson_depth})...")
 	
 	# Poisson reconstruction with higher quality settings
 	mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
@@ -276,20 +397,35 @@ def point_cloud_to_mesh(pcd: o3d.geometry.PointCloud, poisson_depth: int = 9) ->
 	)
 	
 	# Remove low-density vertices (artifacts)
-	print("Cleaning mesh...")
+	report_progress("Cleaning mesh...")
 	densities = np.asarray(densities)
-	density_threshold = np.quantile(densities, DENSITY_QUANTILE)
+	density_threshold = np.quantile(densities, params['density_quantile'])
 	vertices_to_remove = densities < density_threshold
 	mesh.remove_vertices_by_mask(vertices_to_remove)
 	
 	# Smooth the mesh
-	mesh = mesh.filter_smooth_simple(number_of_iterations=MESH_SMOOTH_ITERATIONS)
+	mesh = mesh.filter_smooth_simple(number_of_iterations=params['mesh_smooth_iterations'])
+	
+	# Advanced smoothing with Laplacian
+	if num_points > 10000:
+		report_progress("Applying Laplacian smoothing...")
+		mesh = mesh.filter_smooth_laplacian(number_of_iterations=2)
 	
 	# Additional cleanup
 	mesh.remove_degenerate_triangles()
 	mesh.remove_duplicated_triangles()
 	mesh.remove_duplicated_vertices()
 	mesh.remove_non_manifold_edges()
+	
+	# Fill holes if requested
+	if fill_holes and len(mesh.vertices) > 0:
+		try:
+			report_progress("Filling holes...")
+			# Simple hole filling by identifying boundary loops
+			mesh = mesh.fill_holes()
+		except AttributeError:
+			# fill_holes not available in all Open3D versions
+			pass
 	
 	# Recompute normals after cleanup
 	mesh.compute_vertex_normals()
@@ -300,12 +436,13 @@ def point_cloud_to_mesh(pcd: o3d.geometry.PointCloud, poisson_depth: int = 9) ->
 	flip_matrix[2, 2] = -1.0
 	mesh.transform(flip_matrix)
 	
-	print(f"Mesh created: {len(mesh.vertices)} vertices, {len(mesh.triangles)} triangles")
+	report_progress(f"Mesh created: {len(mesh.vertices)} vertices, {len(mesh.triangles)} triangles")
 	
 	return mesh
 
 
-def multiview_to_mesh(images: List[Image.Image], out_path: str, poisson_depth: int = 9) -> str:
+def multiview_to_mesh(images: List[Image.Image], out_path: str, poisson_depth: int = 9, 
+                      fill_holes: bool = True, progress_callback=None) -> str:
 	"""
 	Multi-view 3D reconstruction: depth estimation + alignment + mesh generation.
 	
@@ -313,6 +450,8 @@ def multiview_to_mesh(images: List[Image.Image], out_path: str, poisson_depth: i
 		images: List of PIL images from different viewpoints
 		out_path: Output path for the mesh file
 		poisson_depth: Poisson reconstruction depth (higher = more detail, 6-12 recommended)
+		fill_holes: Whether to attempt hole filling in the mesh
+		progress_callback: Optional callback function(step, total, message) for progress updates
 	
 	Returns:
 		Path to the saved mesh file
@@ -325,13 +464,14 @@ def multiview_to_mesh(images: List[Image.Image], out_path: str, poisson_depth: i
 	print(f"Poisson depth: {poisson_depth}")
 	
 	# Generate aligned point cloud
-	pcd = images_to_point_cloud(images)
+	pcd = images_to_point_cloud(images, progress_callback=progress_callback)
 	
 	if pcd.is_empty():
 		raise ValueError("Failed to create point cloud from images")
 	
 	# Generate mesh
-	mesh = point_cloud_to_mesh(pcd, poisson_depth=poisson_depth)
+	mesh = point_cloud_to_mesh(pcd, poisson_depth=poisson_depth, 
+	                           fill_holes=fill_holes, progress_callback=progress_callback)
 	
 	# Save mesh
 	print(f"Saving mesh to {out_path}...")
