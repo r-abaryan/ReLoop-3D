@@ -28,7 +28,6 @@ What you get:
   - Single mode: depth estimation (MiDaS) → mesh (fast).
   - Multi-view mode: Open3D point cloud fusion → mesh (better quality, no external deps).
 - 3D Model tab: upload `.obj/.ply/.stl/.glb/.gltf`, see live preview, render N views, classify.
-- Active Learning tab: score uncertain meshes, label, apply to dataset, retrain.
 
 Notes:
 - 3D preview converts to `.glb` for browser viewing.
